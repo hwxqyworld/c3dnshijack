@@ -293,18 +293,18 @@ static void on_ap_start(void *arg, esp_event_base_t base, int32_t id, void *data
 {
     printf("AP started, launching DNS/HTTP servers...\n");
 
-    esp_netif_dhcps_stop(ap_netif);
-    esp_netif_ip_info_t ip_info;
-    esp_netif_get_ip_info(ap_netif, &ip_info);
+    // esp_netif_dhcps_stop(ap_netif);
+    // esp_netif_ip_info_t ip_info;
+    // esp_netif_get_ip_info(ap_netif, &ip_info);
 
-    esp_netif_dns_info_t dns;
-    dns.ip.type = ESP_IPADDR_TYPE_V4;
-    dns.ip.u_addr.ip4.addr = ip_info.ip.addr;
+    // esp_netif_dns_info_t dns;
+    // dns.ip.type = ESP_IPADDR_TYPE_V4;
+    // dns.ip.u_addr.ip4.addr = ip_info.ip.addr;
 
-    esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
-                           ESP_NETIF_DOMAIN_NAME_SERVER, &dns, sizeof(dns));
+    // esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
+    //                        ESP_NETIF_DOMAIN_NAME_SERVER, &dns, sizeof(dns));
 
-    esp_netif_dhcps_start(ap_netif);
+    // esp_netif_dhcps_start(ap_netif);
     xTaskCreate(dns_server_task, "dns_server", 4096, NULL, 5, NULL);
     xTaskCreate(http_server_task, "http_server", 4096, NULL, 5, NULL);
 }
@@ -364,9 +364,9 @@ static void wifi_init(void)
     }
 
     /* DHCP 下发 DNS = AP 自己 */
-//  esp_netif_dhcps_stop(ap_netif);
+  esp_netif_dhcps_stop(ap_netif);
 
-/*    esp_netif_ip_info_t ip_info;
+    esp_netif_ip_info_t ip_info;
     esp_netif_get_ip_info(ap_netif, &ip_info);
 
     esp_netif_dns_info_t dns;
@@ -376,7 +376,7 @@ static void wifi_init(void)
     esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
                            ESP_NETIF_DOMAIN_NAME_SERVER, &dns, sizeof(dns));
 
-    esp_netif_dhcps_start(ap_netif);*/
+    esp_netif_dhcps_start(ap_netif);
 }
 
 /* ---------------- 主入口 ---------------- */
