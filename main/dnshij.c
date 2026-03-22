@@ -283,7 +283,7 @@ static void enable_napt()
     printf("Enable NAPT on AP: %s\n", ip4addr_ntoa((const ip4_addr_t *)&ip_info.ip));
 
     if (nat_enabled) {
-        ip_napt_enable(ip_info.ip.addr, 1);
+        // ip_napt_enable(ip_info.ip.addr, 1);
     }
 }
 
