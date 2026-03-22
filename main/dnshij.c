@@ -1,4 +1,6 @@
 #include <string.h>
+#include "driver/gpio.h"
+#include "gpio_ctrl.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -10,8 +12,8 @@
 #define STA_SSID "50zxxx"
 #define STA_PASS "wszxxx561"
 
-#define AP_SSID  "C3-AP"
-#define AP_PASS  "cccccccC"
+#define AP_SSID  "big-yellow-ding-ding-car"
+#define AP_PASS  "CarCarCar"
 
 static esp_netif_t *ap_netif;
 
@@ -271,6 +273,8 @@ static void dns_server_task(void *arg)
 
 /* ---------------- NAT 启用 ---------------- */
 
+static int nat_enabled = 0;
+static int sta_enabled = 0;
 static void enable_napt()
 {
     esp_netif_ip_info_t ip_info;
@@ -278,7 +282,9 @@ static void enable_napt()
 
     printf("Enable NAPT on AP: %s\n", ip4addr_ntoa((const ip4_addr_t *)&ip_info.ip));
 
-    ip_napt_enable(ip_info.ip.addr, 1);
+    if (nat_enabled) {
+        ip_napt_enable(ip_info.ip.addr, 1);
+    }
 }
 
 /* ---------------- AP 启动事件 ---------------- */
@@ -314,21 +320,17 @@ static void on_sta_got_ip(void *arg, esp_event_base_t base, int32_t id, void *da
 
 static void wifi_init(void)
 {
+
     esp_netif_init();
     esp_event_loop_create_default();
 
-    esp_netif_create_default_wifi_sta();
-    ap_netif = esp_netif_create_default_wifi_ap();
+    gpio_ctrl_init();
+    sta_enabled = gpio_ctrl_sta_nat_enabled();
+    nat_enabled = sta_enabled;
 
+    ap_netif = esp_netif_create_default_wifi_ap();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
-
-    wifi_config_t sta_cfg = {
-        .sta = {
-            .ssid = STA_SSID,
-            .password = STA_PASS,
-        },
-    };
 
     wifi_config_t ap_cfg = {
         .ap = {
@@ -340,16 +342,25 @@ static void wifi_init(void)
             .authmode = WIFI_AUTH_WPA2_PSK,
         },
     };
-
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
-    esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    esp_wifi_set_mode(sta_enabled ? WIFI_MODE_APSTA : WIFI_MODE_AP);
     esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    if (sta_enabled) {
+        wifi_config_t sta_cfg = {
+            .sta = {
+                .ssid = STA_SSID,
+                .password = STA_PASS,
+            },
+        };
+        esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    }
 
     /* 注册事件 */
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_START, &on_ap_start, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_sta_got_ip, NULL);
     esp_wifi_start();
-    esp_wifi_connect();   // ★ 必须加
+    if (sta_enabled) {
+        esp_wifi_connect();
+    }
 
     /* DHCP 下发 DNS = AP 自己 */
 //  esp_netif_dhcps_stop(ap_netif);
