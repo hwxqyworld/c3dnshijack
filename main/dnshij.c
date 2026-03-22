@@ -1,6 +1,6 @@
 #include <string.h>
 #include "driver/gpio.h"
-#include "gpio_ctrl.h"
+// #include "gpio_ctrl.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -324,8 +324,9 @@ static void wifi_init(void)
     esp_netif_init();
     esp_event_loop_create_default();
 
-    gpio_ctrl_init();
-    sta_enabled = gpio_ctrl_sta_nat_enabled();
+    // gpio_ctrl_init();
+    // sta_enabled = gpio_ctrl_sta_nat_enabled();
+    sta_enabled = 0;
     nat_enabled = sta_enabled;
 
     ap_netif = esp_netif_create_default_wifi_ap();
