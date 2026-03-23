@@ -27,8 +27,12 @@ static const char *blacklist[] = {
 static int is_blacklisted(const char *domain)
 {
     for (int i = 0; blacklist[i]; i++) {
-        if (strstr(domain, blacklist[i])) return 1;
+        if (strstr(domain, blacklist[i])) {
+            printf("[DNSHIJ][BLACKLIST] 域名 %s 命中黑名单 %s\n", domain, blacklist[i]);
+            return 1;
+        }
     }
+    printf("[DNSHIJ][BLACKLIST] 域名 %s 未命中黑名单\n", domain);
     return 0;
 }
 
@@ -82,8 +86,12 @@ extern const unsigned char server_key_pem_end[]    asm("_binary_server_key_pem_e
 
 static void http_server_task(void *arg)
 {
+    printf("[DNSHIJ][HTTP] 启动 HTTPS 阻断服务器...\n");
     int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock < 0) { vTaskDelete(NULL); }
+    if (sock < 0) {
+        printf("[DNSHIJ][HTTP][ERR] 创建 socket 失败\n");
+        vTaskDelete(NULL);
+    }
 
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
@@ -91,11 +99,13 @@ static void http_server_task(void *arg)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        printf("[DNSHIJ][HTTP][ERR] 绑定 443 端口失败\n");
         close(sock);
         vTaskDelete(NULL);
     }
 
     listen(sock, 5);
+    printf("[DNSHIJ][HTTP] 监听 443 端口\n");
 
     const char *block_page =
         "HTTP/1.1 200 OK\r\n"
@@ -111,45 +121,71 @@ static void http_server_task(void *arg)
     mbedtls_pk_init(&key);
     mbedtls_ssl_config_init(&conf);
 
-    mbedtls_x509_crt_parse(&cert,
+    int ret;
+    ret = mbedtls_x509_crt_parse(&cert,
         server_cert_pem_start,
         server_cert_pem_end - server_cert_pem_start);
+    if (ret != 0) {
+        printf("[DNSHIJ][HTTP][ERR] 证书解析失败: -0x%04X\n", -ret);
+    }
 
-    mbedtls_pk_parse_key(&key,
+    ret = mbedtls_pk_parse_key(&key,
         server_key_pem_start,
         server_key_pem_end - server_key_pem_start,
         NULL, 0);
+    if (ret != 0) {
+        printf("[DNSHIJ][HTTP][ERR] 私钥解析失败: -0x%04X\n", -ret);
+    }
 
-    mbedtls_ssl_config_defaults(&conf,
+    ret = mbedtls_ssl_config_defaults(&conf,
         MBEDTLS_SSL_IS_SERVER,
         MBEDTLS_SSL_TRANSPORT_STREAM,
         MBEDTLS_SSL_PRESET_DEFAULT);
+    if (ret != 0) {
+        printf("[DNSHIJ][HTTP][ERR] SSL 配置默认值失败: -0x%04X\n", -ret);
+    }
 
     mbedtls_ssl_conf_ca_chain(&conf, cert.next, NULL);
     mbedtls_ssl_conf_own_cert(&conf, &cert, &key);
 
     while (1) {
         int client = accept(sock, NULL, NULL);
-        if (client < 0) continue;
+        if (client < 0) {
+            printf("[DNSHIJ][HTTP][ERR] accept 失败\n");
+            continue;
+        }
 
         // 为每个连接在堆上创建 SSL 上下文
         mbedtls_ssl_context *ssl = (mbedtls_ssl_context *)malloc(sizeof(mbedtls_ssl_context));
         if (!ssl) {
+            printf("[DNSHIJ][HTTP][ERR] malloc ssl context 失败\n");
             close(client);
             continue;
         }
 
         mbedtls_ssl_init(ssl);
-        mbedtls_ssl_setup(ssl, &conf);
+        ret = mbedtls_ssl_setup(ssl, &conf);
+        if (ret != 0) {
+            printf("[DNSHIJ][HTTP][ERR] ssl_setup 失败: -0x%04X\n", -ret);
+            mbedtls_ssl_free(ssl);
+            free(ssl);
+            close(client);
+            continue;
+        }
         mbedtls_ssl_set_bio(ssl, &client,
                             mbedtls_net_send, mbedtls_net_recv, NULL);
 
-        if (mbedtls_ssl_handshake(ssl) == 0) {
+        ret = mbedtls_ssl_handshake(ssl);
+        if (ret == 0) {
             char buf[512];
-            mbedtls_ssl_read(ssl, (unsigned char *)buf, sizeof(buf));
-            mbedtls_ssl_write(ssl,
+            int rlen = mbedtls_ssl_read(ssl, (unsigned char *)buf, sizeof(buf));
+            printf("[DNSHIJ][HTTP] SSL 握手成功, 读取 %d 字节\n", rlen);
+            int wlen = mbedtls_ssl_write(ssl,
                 (const unsigned char *)block_page,
                 strlen(block_page));
+            printf("[DNSHIJ][HTTP] 已发送阻断页面, 写入 %d 字节\n", wlen);
+        } else {
+            printf("[DNSHIJ][HTTP][ERR] SSL 握手失败: -0x%04X\n", -ret);
         }
 
         mbedtls_ssl_close_notify(ssl);
@@ -169,14 +205,22 @@ static int dns_query_upstream(const uint8_t *req, int req_len,
 
     for (int i = 0; i < 2; i++) {
         int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (sock < 0) continue;
+        if (sock < 0) {
+            printf("[DNSHIJ][DNS][ERR] 创建上游 socket 失败\n");
+            continue;
+        }
 
         struct sockaddr_in dns = {0};
         dns.sin_family = AF_INET;
         dns.sin_port = htons(53);
         dns.sin_addr.s_addr = inet_addr(dns_servers[i]);
 
-        sendto(sock, req, req_len, 0, (struct sockaddr *)&dns, sizeof(dns));
+        int sret = sendto(sock, req, req_len, 0, (struct sockaddr *)&dns, sizeof(dns));
+        if (sret < 0) {
+            printf("[DNSHIJ][DNS][ERR] 发送到上游 %s 失败\n", dns_servers[i]);
+            close(sock);
+            continue;
+        }
 
         struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -189,10 +233,14 @@ static int dns_query_upstream(const uint8_t *req, int req_len,
 
         if (n > 0) {
             *resp_len = n;
+            printf("[DNSHIJ][DNS] 上游 %s 返回 %d 字节\n", dns_servers[i], n);
             return 1;
+        } else {
+            printf("[DNSHIJ][DNS][ERR] 上游 %s 无响应\n", dns_servers[i]);
         }
     }
 
+    printf("[DNSHIJ][DNS][ERR] 所有上游 DNS 查询失败\n");
     return 0;
 }
 
@@ -200,8 +248,12 @@ static int dns_query_upstream(const uint8_t *req, int req_len,
 
 static void dns_server_task(void *arg)
 {
+    printf("[DNSHIJ][DNS] 启动 DNS 服务器...\n");
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock < 0) { printf("DNS server error!"); vTaskDelete(NULL); }
+    if (sock < 0) {
+        printf("[DNSHIJ][DNS][ERR] 创建 socket 失败\n");
+        vTaskDelete(NULL);
+    }
 
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
@@ -209,10 +261,12 @@ static void dns_server_task(void *arg)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        printf("[DNSHIJ][DNS][ERR] 绑定 53 端口失败\n");
         close(sock);
         vTaskDelete(NULL);
     }
 
+    printf("[DNSHIJ][DNS] 监听 53 端口\n");
     uint8_t buf[512];
     uint8_t resp[512];
 
@@ -222,7 +276,10 @@ static void dns_server_task(void *arg)
 
         int n = recvfrom(sock, buf, sizeof(buf), 0,
                          (struct sockaddr *)&client, &len);
-        if (n <= 0) continue;
+        if (n <= 0) {
+            printf("[DNSHIJ][DNS][ERR] 接收数据失败\n");
+            continue;
+        }
 
         /* ---- 解析 QNAME ---- */
         char domain[256] = {0};
@@ -235,8 +292,11 @@ static void dns_server_task(void *arg)
         domain[d - 1] = 0;
         p += 5;
 
+        printf("[DNSHIJ][DNS] 收到查询: %s\n", domain);
+
         /* ---- 黑名单处理 ---- */
         if (is_blacklisted(domain)) {
+            printf("[DNSHIJ][DNS] %s 命中黑名单，返回 AP IP\n", domain);
             memcpy(resp, buf, n);
             resp[2] = 0x81; resp[3] = 0x80;
             resp[4] = 0x00; resp[5] = 0x01;
@@ -253,21 +313,24 @@ static void dns_server_task(void *arg)
             esp_netif_ip_info_t ip_info;
             esp_netif_get_ip_info(ap_netif, &ip_info);
             uint32_t ip = ip_info.ip.addr;
-//            uint32_t ip = 0x6e2a2da9;
 
             resp[pos++] = ip & 0xFF;
             resp[pos++] = (ip >> 8) & 0xFF;
             resp[pos++] = (ip >> 16) & 0xFF;
             resp[pos++] = (ip >> 24) & 0xFF;
 
-            sendto(sock, resp, pos, 0, (struct sockaddr *)&client, len);
+            int sent = sendto(sock, resp, pos, 0, (struct sockaddr *)&client, len);
+            printf("[DNSHIJ][DNS] 已返回 AP IP，发送 %d 字节\n", sent);
             continue;
         }
 
         /* ---- 非黑名单：上游 DNS 查询 ---- */
         int resp_len = 0;
         if (dns_query_upstream(buf, n, resp, &resp_len)) {
-            sendto(sock, resp, resp_len, 0, (struct sockaddr *)&client, len);
+            int sent = sendto(sock, resp, resp_len, 0, (struct sockaddr *)&client, len);
+            printf("[DNSHIJ][DNS] 已转发上游响应，发送 %d 字节\n", sent);
+        } else {
+            printf("[DNSHIJ][DNS][ERR] 上游查询失败，未返回响应\n");
         }
     }
 }
@@ -281,10 +344,13 @@ static void enable_napt()
     esp_netif_ip_info_t ip_info;
     esp_netif_get_ip_info(ap_netif, &ip_info);
 
-    printf("Enable NAPT on AP: %s\n", ip4addr_ntoa((const ip4_addr_t *)&ip_info.ip));
+    printf("[DNSHIJ][NAT] Enable NAPT on AP: %s\n", ip4addr_ntoa((const ip4_addr_t *)&ip_info.ip));
 
     if (nat_enabled) {
         // ip_napt_enable(ip_info.ip.addr, 1);
+        printf("[DNSHIJ][NAT] NAPT 已启用\n");
+    } else {
+        printf("[DNSHIJ][NAT] NAPT 未启用\n");
     }
 }
 
@@ -292,7 +358,7 @@ static void enable_napt()
 
 static void on_ap_start(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    printf("AP started, launching DNS/HTTP servers...\n");
+    printf("[DNSHIJ][AP] AP started, launching DNS/HTTP servers...\n");
 
     esp_netif_dhcps_stop(ap_netif);
     esp_netif_ip_info_t ip_info;
@@ -306,6 +372,7 @@ static void on_ap_start(void *arg, esp_event_base_t base, int32_t id, void *data
                            ESP_NETIF_DOMAIN_NAME_SERVER, &dns, sizeof(dns));
 
     esp_netif_dhcps_start(ap_netif);
+    printf("[DNSHIJ][AP] DHCP 服务器已设置 DNS = AP 自己\n");
     xTaskCreate(dns_server_task, "dns_server", 12880, NULL, 5, NULL);
     xTaskCreate(http_server_task, "http_server", 12880, NULL, 5, NULL);
 }
@@ -314,6 +381,7 @@ static void on_ap_start(void *arg, esp_event_base_t base, int32_t id, void *data
 
 static void on_sta_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
+    printf("[DNSHIJ][STA] STA 获得 IP，尝试启用 NAPT\n");
     enable_napt();
 }
 
@@ -321,6 +389,7 @@ static void on_sta_got_ip(void *arg, esp_event_base_t base, int32_t id, void *da
 
 static void wifi_init(void)
 {
+    printf("[DNSHIJ][WIFI] 初始化 WiFi ...\n");
 
     esp_netif_init();
     esp_event_loop_create_default();
@@ -346,6 +415,7 @@ static void wifi_init(void)
     };
     esp_wifi_set_mode(sta_enabled ? WIFI_MODE_APSTA : WIFI_MODE_AP);
     esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    printf("[DNSHIJ][WIFI] AP 配置: SSID=%s, 密码=%s\n", AP_SSID, AP_PASS);
     if (sta_enabled) {
         wifi_config_t sta_cfg = {
             .sta = {
@@ -354,36 +424,29 @@ static void wifi_init(void)
             },
         };
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+        printf("[DNSHIJ][WIFI] STA 配置: SSID=%s, 密码=%s\n", STA_SSID, STA_PASS);
     }
 
     /* 注册事件 */
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_START, &on_ap_start, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_sta_got_ip, NULL);
     esp_wifi_start();
+    printf("[DNSHIJ][WIFI] WiFi 启动完成\n");
     if (sta_enabled) {
         esp_wifi_connect();
+        printf("[DNSHIJ][WIFI] STA 尝试连接\n");
     }
 
     /* DHCP 下发 DNS = AP 自己 */
-/*  esp_netif_dhcps_stop(ap_netif);
-
-    esp_netif_ip_info_t ip_info;
-    esp_netif_get_ip_info(ap_netif, &ip_info);
-
-    esp_netif_dns_info_t dns;
-    dns.ip.type = ESP_IPADDR_TYPE_V4;
-    dns.ip.u_addr.ip4.addr = ip_info.ip.addr;
-
-    esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
-                           ESP_NETIF_DOMAIN_NAME_SERVER, &dns, sizeof(dns));
-
-    esp_netif_dhcps_start(ap_netif);*/
+    // ...existing code...
 }
 
 /* ---------------- 主入口 ---------------- */
 
 void app_main(void)
 {
+    printf("[DNSHIJ] app_main 启动\n");
     nvs_flash_init();
     wifi_init();
+    printf("[DNSHIJ] app_main 完成\n");
 }
