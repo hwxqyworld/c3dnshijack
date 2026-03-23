@@ -87,7 +87,7 @@ static void http_server_task(void *arg)
 
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(443);   // TLS 必须 443
+    addr.sin_port = htons(443);
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
@@ -102,18 +102,14 @@ static void http_server_task(void *arg)
         "Content-Type: text/html\r\n\r\n"
         "<html><body><h1>席清源大c哥最帅</h1></body></html>";
 
-    // -----------------------------
-    // 初始化 mbedTLS
-    // -----------------------------
-    mbedtls_ssl_context ssl;
-    mbedtls_ssl_config conf;
+    // 初始化证书和密钥（共享）
     mbedtls_x509_crt cert;
     mbedtls_pk_context key;
+    mbedtls_ssl_config conf;
 
-    mbedtls_ssl_init(&ssl);
-    mbedtls_ssl_config_init(&conf);
     mbedtls_x509_crt_init(&cert);
     mbedtls_pk_init(&key);
+    mbedtls_ssl_config_init(&conf);
 
     mbedtls_x509_crt_parse(&cert,
         server_cert_pem_start,
@@ -132,28 +128,33 @@ static void http_server_task(void *arg)
     mbedtls_ssl_conf_ca_chain(&conf, cert.next, NULL);
     mbedtls_ssl_conf_own_cert(&conf, &cert, &key);
 
-    mbedtls_ssl_setup(&ssl, &conf);
-
-    // -----------------------------
-    // 主循环：accept → TLS 握手 → read → write
-    // -----------------------------
     while (1) {
         int client = accept(sock, NULL, NULL);
         if (client < 0) continue;
 
-        mbedtls_ssl_session_reset(&ssl);
-        mbedtls_ssl_set_bio(&ssl, &client,
+        // 为每个连接在堆上创建 SSL 上下文
+        mbedtls_ssl_context *ssl = (mbedtls_ssl_context *)malloc(sizeof(mbedtls_ssl_context));
+        if (!ssl) {
+            close(client);
+            continue;
+        }
+
+        mbedtls_ssl_init(ssl);
+        mbedtls_ssl_setup(ssl, &conf);
+        mbedtls_ssl_set_bio(ssl, &client,
                             mbedtls_net_send, mbedtls_net_recv, NULL);
 
-        if (mbedtls_ssl_handshake(&ssl) == 0) {
+        if (mbedtls_ssl_handshake(ssl) == 0) {
             char buf[512];
-            mbedtls_ssl_read(&ssl, (unsigned char *)buf, sizeof(buf));
-            mbedtls_ssl_write(&ssl,
+            mbedtls_ssl_read(ssl, (unsigned char *)buf, sizeof(buf));
+            mbedtls_ssl_write(ssl,
                 (const unsigned char *)block_page,
                 strlen(block_page));
         }
 
-        mbedtls_ssl_close_notify(&ssl);
+        mbedtls_ssl_close_notify(ssl);
+        mbedtls_ssl_free(ssl);
+        free(ssl);
         close(client);
     }
 }
@@ -200,7 +201,7 @@ static int dns_query_upstream(const uint8_t *req, int req_len,
 static void dns_server_task(void *arg)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock < 0) { vTaskDelete(NULL); }
+    if (sock < 0) { printf("DNS server error!"); vTaskDelete(NULL); }
 
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
@@ -293,20 +294,20 @@ static void on_ap_start(void *arg, esp_event_base_t base, int32_t id, void *data
 {
     printf("AP started, launching DNS/HTTP servers...\n");
 
-    // esp_netif_dhcps_stop(ap_netif);
-    // esp_netif_ip_info_t ip_info;
-    // esp_netif_get_ip_info(ap_netif, &ip_info);
+    esp_netif_dhcps_stop(ap_netif);
+    esp_netif_ip_info_t ip_info;
+    esp_netif_get_ip_info(ap_netif, &ip_info);
 
-    // esp_netif_dns_info_t dns;
-    // dns.ip.type = ESP_IPADDR_TYPE_V4;
-    // dns.ip.u_addr.ip4.addr = ip_info.ip.addr;
+    esp_netif_dns_info_t dns;
+    dns.ip.type = ESP_IPADDR_TYPE_V4;
+    dns.ip.u_addr.ip4.addr = ip_info.ip.addr;
 
-    // esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
-    //                        ESP_NETIF_DOMAIN_NAME_SERVER, &dns, sizeof(dns));
+    esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
+                           ESP_NETIF_DOMAIN_NAME_SERVER, &dns, sizeof(dns));
 
-    // esp_netif_dhcps_start(ap_netif);
-    xTaskCreate(dns_server_task, "dns_server", 4096, NULL, 5, NULL);
-    xTaskCreate(http_server_task, "http_server", 4096, NULL, 5, NULL);
+    esp_netif_dhcps_start(ap_netif);
+    xTaskCreate(dns_server_task, "dns_server", 12880, NULL, 5, NULL);
+    xTaskCreate(http_server_task, "http_server", 12880, NULL, 5, NULL);
 }
 
 /* ---------------- STA 获得 IP 事件 ---------------- */
@@ -364,7 +365,7 @@ static void wifi_init(void)
     }
 
     /* DHCP 下发 DNS = AP 自己 */
-  esp_netif_dhcps_stop(ap_netif);
+/*  esp_netif_dhcps_stop(ap_netif);
 
     esp_netif_ip_info_t ip_info;
     esp_netif_get_ip_info(ap_netif, &ip_info);
@@ -376,7 +377,7 @@ static void wifi_init(void)
     esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
                            ESP_NETIF_DOMAIN_NAME_SERVER, &dns, sizeof(dns));
 
-    esp_netif_dhcps_start(ap_netif);
+    esp_netif_dhcps_start(ap_netif);*/
 }
 
 /* ---------------- 主入口 ---------------- */
