@@ -20,7 +20,7 @@ static esp_netif_t *ap_netif;
 /* ---------------- 黑名单 ---------------- */
 static const char *blacklist[] = {
     "zhkt.changyan.com",
-    "example-block.com",
+    "bj.download.cycore.cn",
     NULL
 };
 
@@ -110,7 +110,7 @@ static void http_server_task(void *arg)
     const char *block_page =
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html\r\n\r\n"
-        "<html><body><h1>席清源大c哥最帅</h1></body></html>";
+        "<html><head><meta charset='utf-8' /></head></head><body><h1>席清源大c哥最帅</h1><br /><a href='https://aliyun.com'>test</a></body></html>";
 
     // 初始化证书和密钥（共享）
     mbedtls_x509_crt cert;
