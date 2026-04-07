@@ -21,6 +21,7 @@ static esp_netif_t *ap_netif;
 static const char *blacklist[] = {
     "zhkt.changyan.com",
     "bj.download.cycore.cn",
+    "pass.changyan.com",
     NULL
 };
 
